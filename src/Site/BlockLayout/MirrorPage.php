@@ -80,10 +80,9 @@ class MirrorPage extends AbstractBlockLayout
         // Factory is not used to make rendering simpler.
         $services = $site->getServiceLocator();
         $formElementManager = $services->get('FormElementManager');
-        $defaultSettings = $services->get('Config')['blockplus']['block_settings']['mirrorPage'];
-        $blockFieldset = \BlockPlus\Form\MirrorPageFieldset::class;
+        $blockFieldset = \Internationalisation\Form\MirrorPageFieldset::class;
 
-        $data = $block ? ($block->data() ?? []) + $defaultSettings : $defaultSettings;
+        $data = $block ? ($block->data() ?? []) : [];
 
         $dataForm = [];
         foreach ($data as $key => $value) {
@@ -109,14 +108,12 @@ class MirrorPage extends AbstractBlockLayout
         try {
             $response = $view->api()->read('site_pages', ['id' => $mirrorPage]);
         } catch (\Omeka\Api\Exception\NotFoundException $e) {
-            $view->logger()->err(
-                'Mirror page block #{block_id} in site {site_slug} and page {page_slug} should be updated: it refers to a removed page.', // @translate
-                [
-                    'block_id' => $block->id(),
-                    'site_slug' => $block->page()->site()->slug(),
-                    'page_slug' => $block->page()->slug(),
-                ]
-            );
+            $view->logger()->err(sprintf(
+                'Mirror page block #%s in site %s and page %s should be updated: it refers to a removed page.', // @translate
+                $block->id(),
+                $block->page()->site()->slug(),
+                $block->page()->slug(),
+            ));
             return '';
         } catch (\Omeka\Api\Exception\PermissionDeniedException $e) {
             return '';
@@ -139,10 +136,10 @@ class MirrorPage extends AbstractBlockLayout
         try {
             return $view->render($contentView);
         } catch (\Exception $e) {
-            $view->logger()->err(
-                'Cannot render this mirror page for now: {exception}.', // @translate
-                ['exception' => $e]
-            );
+            $view->logger()->err(sprintf(
+                'Cannot render this mirror page for now: %s.', // @translate
+                (string) $e
+            ));
             return '';
         }
     }

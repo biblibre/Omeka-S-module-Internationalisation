@@ -74,12 +74,6 @@ class LocaleValue extends AbstractHelper
         ];
         $options += $defaultOptions;
 
-        /** @var \Common\Stdlib\EasyMeta $easyMeta */
-        $easyMeta = $view->plugin('easyMeta')();
-        if (!$easyMeta->propertyId($term)) {
-            return $options['default'];
-        }
-
         $values = $resource->values();
         if (!isset($values[$term])) {
             return $options['default'];

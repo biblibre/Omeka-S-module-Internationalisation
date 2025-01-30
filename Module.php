@@ -2,18 +2,14 @@
 
 namespace Internationalisation;
 
-if (!class_exists(\Common\TraitModule::class)) {
-    require_once dirname(__DIR__) . '/Common/TraitModule.php';
-}
-
-use Common\Stdlib\PsrMessage;
-use Common\TraitModule;
 use Internationalisation\Api\Representation\SitePageRelationRepresentation;
 use Laminas\EventManager\Event;
 use Laminas\EventManager\SharedEventManagerInterface;
 use Laminas\Mvc\MvcEvent;
+use Laminas\ServiceManager\ServiceLocatorInterface;
 use Omeka\Api\Representation\AbstractResourceEntityRepresentation;
 use Omeka\Module\AbstractModule;
+use Omeka\Stdlib\Message;
 
 /**
  * Internationalisation.
@@ -24,10 +20,6 @@ use Omeka\Module\AbstractModule;
  */
 class Module extends AbstractModule
 {
-    use TraitModule;
-
-    const NAMESPACE = __NAMESPACE__;
-
     /**
      * @var array
      */
@@ -61,27 +53,130 @@ class Module extends AbstractModule
             );
     }
 
-    protected function preInstall(): void
+    public function install(ServiceLocatorInterface $services)
     {
-        $services = $this->getServiceLocator();
-        $plugins = $services->get('ControllerPluginManager');
-        $translate = $plugins->get('translate');
         $translator = $services->get('MvcTranslator');
-
-        if (!method_exists($this, 'checkModuleActiveVersion') || !$this->checkModuleActiveVersion('Common', '3.4.63')) {
-            $message = new \Omeka\Stdlib\Message(
-                $translate('The module %1$s should be upgraded to version %2$s or later.'), // @translate
-                'Common', '3.4.63'
-            );
-            throw new \Omeka\Module\Exception\ModuleCannotInstallException((string) $message);
-        }
+        $connection = $services->get('Omeka\Connection');
 
         $vendor = __DIR__ . '/vendor/daniel-km/simple-iso-639-3/src/Iso639p3.php';
         if (!file_exists($vendor)) {
-            $message = new PsrMessage(
-                'The composer vendor is not ready. See module’s installation documentation.' // @translate
+            $message = $translator->translate('The composer vendor is not ready. See module’s installation documentation.');
+            throw new \Omeka\Module\Exception\ModuleCannotInstallException($message);
+        }
+
+        $connection->executeStatement(<<<SQL
+            CREATE TABLE site_page_relation (
+                id INT AUTO_INCREMENT NOT NULL,
+                page_id INT NOT NULL,
+                related_page_id INT NOT NULL,
+                INDEX IDX_B0B528C2C4663E4 (page_id),
+                INDEX IDX_B0B528C2335FA941 (related_page_id),
+                UNIQUE INDEX site_page_relation_idx (page_id, related_page_id),
+                PRIMARY KEY(id)
+            ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci ENGINE = InnoDB
+        SQL);
+        $connection->executeStatement(<<<SQL
+            ALTER TABLE site_page_relation ADD CONSTRAINT FK_B0B528C2C4663E4 FOREIGN KEY (page_id) REFERENCES site_page (id) ON DELETE CASCADE
+        SQL);
+        $connection->executeStatement(<<<SQL
+            ALTER TABLE site_page_relation ADD CONSTRAINT FK_B0B528C2335FA941 FOREIGN KEY (related_page_id) REFERENCES site_page (id) ON DELETE CASCADE
+        SQL);
+    }
+
+    public function uninstall(ServiceLocatorInterface $services)
+    {
+        $connection = $services->get('Omeka\Connection');
+        $connection->executeStatement('DROP TABLE site_page_relation');
+    }
+
+    public function upgrade($oldVersion, $newVersion, ServiceLocatorInterface $services)
+    {
+        $plugins = $services->get('ControllerPluginManager');
+        $settings = $services->get('Omeka\Settings');
+        $connection = $services->get('Omeka\Connection');
+        $messenger = $plugins->get('messenger');
+
+        $localConfig = require __DIR__ . '/config/module.config.php';
+
+        if (version_compare($oldVersion, '3.2.0', '<')) {
+            $settings = $services->get('Omeka\Settings\Site');
+            $api = $services->get('Omeka\ApiManager');
+            $siteIds = $api->search('sites', [], ['returnScalar' => 'id'])->getContent();
+            foreach ($siteIds as $siteId) {
+                $settings->setTargetId($siteId);
+                $settings->set('internationalisation_fallbacks',
+                    $localConfig['internationalisation']['site_settings']['internationalisation_fallbacks']);
+                $settings->set('internationalisation_required_languages',
+                    $localConfig['internationalisation']['site_settings']['internationalisation_required_languages']);
+            }
+        }
+
+        if (version_compare($oldVersion, '3.2.4', '<')) {
+            $sql = <<<'SQL'
+                 ALTER TABLE site_page_relation DROP PRIMARY KEY;
+                 ALTER TABLE site_page_relation ADD id INT AUTO_INCREMENT NOT NULL UNIQUE FIRST;
+                 CREATE UNIQUE INDEX site_page_relation_idx ON site_page_relation (page_id, related_page_id);
+                 ALTER TABLE site_page_relation ADD PRIMARY KEY (id);
+                SQL;
+            // Use single statements for execution.
+            // See core commit #2689ce92f.
+            $sqls = array_filter(array_map('trim', explode(";\n", $sql)));
+            foreach ($sqls as $sql) {
+                $connection->executeStatement($sql);
+            }
+        }
+
+        if (version_compare($oldVersion, '3.2.7', '<')) {
+            $sql = <<<'SQL'
+                UPDATE `site_setting` SET `value` = '"all_site"'
+                WHERE `id` = "internationalisation_display_values"
+                    AND `value` = '"all_ordered"';
+                UPDATE site_setting SET `value` = '"site"'
+                WHERE `id` = "internationalisation_display_values"
+                    AND `value` = '"site_lang"';
+                UPDATE site_setting SET `value` = '"site_iso"'
+                WHERE `id` = "internationalisation_display_values"
+                    AND `value` = '"site_lang_iso"';
+                SQL;
+            // Use single statements for execution.
+            // See core commit #2689ce92f.
+            $sqls = array_filter(array_map('trim', explode(";\n", $sql)));
+            foreach ($sqls as $sql) {
+                $connection->executeStatement($sql);
+            }
+
+            $settings = $services->get('Omeka\Settings\Site');
+            $api = $services->get('Omeka\ApiManager');
+            $siteIds = $api->search('sites', [], ['returnScalar' => 'id'])->getContent();
+            foreach ($siteIds as $siteId) {
+                $settings->setTargetId($siteId);
+                $this->prepareSiteLocales($settings);
+            }
+        }
+
+        if (version_compare($oldVersion, '3.3.10', '<')) {
+            $sql = <<<'SQL'
+                UPDATE `site_page_block` SET `layout` = "mirrorPage"
+                WHERE `layout` = "simplePage";
+                SQL;
+            $connection->executeStatement($sql);
+        }
+
+        if (version_compare($oldVersion, '3.4.14', '<')) {
+            $moduleManager = $services->get('Omeka\ModuleManager');
+            $module = $moduleManager->getModule('BlockPlus');
+
+            if ($module && $module->getState() === \Omeka\Module\Manager::STATE_ACTIVE) {
+                if (version_compare($module->getIni('version'), '3.4.29', '<')) {
+                    $message = 'The module BlockPlus should be upgraded to version 3.4.29 or later.';
+                    throw new \Omeka\Module\Exception\ModuleCannotInstallException($message);
+                }
+            }
+
+            $message = new Message(
+                'The language switcher is now available as a page block and as a resource block.' // @translate
             );
-            throw new \Omeka\Module\Exception\ModuleCannotInstallException((string) $message->setTranslator($translator));
+            $messenger->addSuccess($message);
         }
     }
 
@@ -818,10 +913,23 @@ SQL;
 
     public function handleMainSettings(Event $event): void
     {
-        // Process parent settings.
-        $this->handleAnySettings($event, 'settings');
-
         $services = $this->getServiceLocator();
+        $forms = $services->get('FormElementManager');
+        $settings = $services->get('Omeka\Settings');
+
+        $fieldset = $forms->get(Form\SettingsFieldset::class);
+        $fieldset->populateValues([
+            'internationalisation_site_groups' => $settings->get('internationalisation_site_groups', []),
+        ]);
+
+        $form = $event->getTarget();
+
+        $groups = $form->getOption('element_groups');
+        $groups['sites'] = $fieldset->getLabel();
+        $form->setOption('element_groups', $groups);
+        foreach ($fieldset->getElements() as $element) {
+            $form->add($element);
+        }
 
         $api = $services->get('Omeka\ApiManager');
         $sites = $api
@@ -841,12 +949,8 @@ SQL;
 
         /**
          * @var \Omeka\Form\Element\RestoreTextarea $siteGroupsElement
-         * @var \Internationalisation\Form\SettingsFieldset $fieldset
          */
-        $form = $event->getTarget();
-        $fieldset = $form;
-        $siteGroupsElement = $fieldset
-            ->get('internationalisation_site_groups');
+        $siteGroupsElement = $form->get('internationalisation_site_groups');
         $siteGroupsElement
             ->setValue($siteGroupsString)
             ->setRestoreButtonText('Remove all groups') // @translate
@@ -873,7 +977,26 @@ SQL;
 
     public function handleSiteSettings(Event $event): void
     {
-        $this->handleAnySettings($event, 'site_settings');
+        $services = $this->getServiceLocator();
+        $forms = $services->get('FormElementManager');
+        $siteSettings = $services->get('Omeka\Settings\Site');
+
+        $fieldset = $forms->get(Form\SiteSettingsFieldset::class);
+        $fieldset->populateValues([
+            'internationalisation_display_values' => $siteSettings->get('internationalisation_display_values', 'all'),
+            'internationalisation_fallbacks' => $siteSettings->get('internationalisation_fallbacks', []),
+            'internationalisation_required_languages' => $siteSettings->get('internationalisation_required_languages', []),
+        ]);
+
+        $form = $event->getTarget();
+
+        $groups = $form->getOption('element_groups');
+        $groups['internationalisation'] = $fieldset->getLabel();
+        $form->setOption('element_groups', $groups);
+        foreach ($fieldset->getElements() as $element) {
+            $form->add($element);
+        }
+
         $this->prepareSiteLocales();
     }
 
@@ -1015,9 +1138,9 @@ SQL;
                 ? $services->get('Omeka\ApiManager')->read('sites', ['id' => $params['source']], [], ['responseContent' => 'resource'])->getContent()
                 : null;
         } catch (\Omeka\Api\Exception\NotFoundException $e) {
-            $message = new PsrMessage(
-                'The site #{site_id} cannot be copied. Check your rights.', // @translate
-                ['site_id' => $params['source']]
+            $message = new Message(
+                'The site #%s cannot be copied. Check your rights.', // @translate
+                $params['source']
             );
             $messenger->addError($message);
             return;
@@ -1046,24 +1169,22 @@ SQL;
         $strategy = $services->get(\Omeka\Job\DispatchStrategy\Synchronous::class);
         $job = $services->get(\Omeka\Job\Dispatcher::class)
             ->dispatch(\Internationalisation\Job\DuplicateSite::class, $args, $strategy);
-        $message = new PsrMessage(
-            'Remove/copy processes have been done for site "{site_slug}".', // @translate
-            ['site_slug' => $site->getSlug()]
+        $message = new Message(
+            'Remove/copy processes have been done for site "%s".', // @translate
+            $site->getSlug()
         );
         $messenger->addSuccess($message);
 
-        $message = new PsrMessage(
-            'A job was launched in background to copy site data: ({link_job}job #{job_id}{link_end}, {link_log}logs{link_end}).', // @translate
-            [
-                'link_job' => sprintf('<a href="%s">',
-                    htmlspecialchars($urlPlugin->fromRoute('admin/id', ['controller' => 'job', 'id' => $job->getId()]))
-                ),
-                'job_id' => $job->getId(),
-                'link_end' => '</a>',
-                'link_log' => sprintf('<a href="%1$s">', $this->isModuleActive('Log')
+        $message = new Message(
+            'A job was launched in background to copy site data: (%1$sjob #%2$s%3$s, %4$slogs%3$s).', // @translate
+            sprintf('<a href="%s">',
+                htmlspecialchars($urlPlugin->fromRoute('admin/id', ['controller' => 'job', 'id' => $job->getId()]))
+            ),
+            $job->getId(),
+            '</a>',
+            sprintf('<a href="%1$s">', $this->isModuleActive('Log')
                     ? $urlPlugin->fromRoute('admin/default', ['controller' => 'log'], ['query' => ['job_id' => $job->getId()]])
                     : $urlPlugin->fromRoute('admin/id', ['controller' => 'job', 'action' => 'log', 'id' => $job->getId()])),
-            ]
         );
         $message->setEscapeHtml(false);
         $messenger->addSuccess($message);
@@ -1211,5 +1332,32 @@ SQL;
     protected function fixEndOfLine($string): string
     {
         return str_replace(["\r\n", "\n\r", "\r"], ["\n", "\n", "\n"], (string) $string);
+    }
+
+    protected function isModuleVersionAtLeast(string $module, string $version): bool
+    {
+        $services = $this->getServiceLocator();
+        $moduleManager = $services->get('Omeka\ModuleManager');
+        $module = $moduleManager->getModule($module);
+        if (!$module) {
+            return false;
+        }
+
+        $moduleVersion = $module->getIni('version');
+        return $moduleVersion && version_compare($moduleVersion, $version, '>=');
+    }
+
+    protected function isModuleActive(string $module): bool
+    {
+        $services = $this->getServiceLocator();
+        $moduleManager = $services->get('Omeka\ModuleManager');
+        $module = $moduleManager->getModule($module);
+
+        return $module && $module->getState() === \Omeka\Module\Manager::STATE_ACTIVE;
+    }
+
+    public function getConfig()
+    {
+        return include __DIR__ . '/config/module.config.php';
     }
 }

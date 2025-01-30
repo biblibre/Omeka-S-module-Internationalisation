@@ -21,8 +21,6 @@ so check the system information in the bottom of the admin board of Omeka.
 
 See general end user documentation for [installing a module].
 
-This module requires the module [Common], that should be installed first.
-
 The module uses external libraries, so use the release zip to install it, or use
 and init the source.
 

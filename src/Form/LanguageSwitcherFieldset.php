@@ -2,7 +2,7 @@
 
 namespace Internationalisation\Form;
 
-use Common\Form\Element as CommonElement;
+use Laminas\Form\Element\Radio;
 use Laminas\Form\Fieldset;
 
 class LanguageSwitcherFieldset extends Fieldset
@@ -12,12 +12,19 @@ class LanguageSwitcherFieldset extends Fieldset
         $this
             ->add([
                 'name' => 'o:block[__blockIndex__][o:data][display_locale]',
-                'type' => CommonElement\OptionalRadio::class,
+                'type' => Radio::class,
                 'options' => [
                     'label' => 'Type of display for language', // @translate
                     'value_options' => [
-                        'code' => 'Language code', // @translate
-                        'flag' => 'Language flag', // @translate
+                        [
+                            'value' => 'code',
+                            'label'  => 'Language code', // @translate
+                            'selected' => true,
+                        ],
+                        [
+                            'value' => 'flag',
+                            'label'  => 'Language flag', // @translate
+                        ],
                     ],
                 ],
                 'attributes' => [
